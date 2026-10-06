@@ -33,7 +33,7 @@ Choosing which layers to modify, and how strongly, is the hard part: too strong 
 
 > **Research use only.** Uncensored models operate with their safety filters removed. Always follow the original model's license and terms of use, and handle the output strictly within research and educational contexts.
 
-For the algorithm and full experiments, see the technical report: [Tema_Q-Abliterated_Technical_Report](https://github.com/ek15072809/Tema_Q-Abliterated/blob/main/docs/Tema_Q-Abliterated_Technical_Report.pdf).
+For the algorithm and full experiments, see the technical report: [Tema_Q-Abliterated_Technical_Report](https://github.com/ek15072809/Tema_Q-Abliterated/blob/main/docs/Tema_Q-Abliterated_Technical_Report.pdf)
 
 ---
 
