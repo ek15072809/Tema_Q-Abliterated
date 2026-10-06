@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "temaq-abliterated"
+version = "1.0.0"
+description = "Exploratory weight-uncensoring tool for LLMs (SCAPE algorithm: floor-calibrated surrogate objective, structured seed-grid initialization, flat full-band kernels, first-token verification gate with user confirmation, checkpoint resume with pre-load re-run menu, HuggingFace Hub upload)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "ek15072809" }]
+requires-python = ">=3.10"
+keywords = ["llm", "transformer", "abliteration", "uncensored", "weights"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "transformers>=4.44",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.24",
+    "torch>=2.2",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "psutil>=5.9",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+datasets = ["datasets>=2.19"]
+cpuinfo = ["py-cpuinfo>=9.0"]
+
+[project.urls]
+Homepage = "https://github.com/ek15072809/Tema_Q-Abliterated"
+Repository = "https://github.com/ek15072809/Tema_Q-Abliterated"
+Issues = "https://github.com/ek15072809/Tema_Q-Abliterated/issues"
+
+[project.scripts]
+temaq-abliterated = "temaq_abliterated.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+temaq_abliterated = ["data/*.txt"]

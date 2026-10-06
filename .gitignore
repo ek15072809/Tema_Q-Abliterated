@@ -1,0 +1,15 @@
+# Build artifacts
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+
+# Workspaces generated at runtime (caches, checkpoints, exported models)
+tq_workspace/
+
+# Research material for the paper (not published on GitHub)
+paper/
+
+# Local settings
+config.toml

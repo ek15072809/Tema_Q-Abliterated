@@ -1,0 +1,62 @@
+# temaq-abliterated example settings file (v1.0.0)
+# Copy this file to config.toml and run:
+# temaq-abliterated Qwen/Qwen3.5-4B --config config.toml
+# Explicit CLI flags always take precedence over this file.
+
+system_prompt = "You are a helpful assistant."
+trials = 0                # 0 = auto (GPU: 200 trials / CPU: 120 trials)
+target_refusal = 0.03     # target soft refusal rate of the surrogate metric
+penalty = 8.0             # penalty coefficient for exceeding the target
+n_probe = 0               # 0 = auto (48..24 probes depending on model size)
+kl_tokens = 8             # teacher-forced tokens for multi-position KL
+                           # (also the multi-position refusal measurement width)
+max_new_tokens = 64       # generated tokens for final verification
+verify_probes = 100       # number of verification prompts (full generation)
+verify_topk = 5           # top candidates to verify (CPU runs are capped to 3 runs total)
+verify_gate = 0.4         # skip full-generation verification when the first-token surrogate
+                           # refusal exceeds this (floorless metric)
+select = "interactive"    # "interactive" / "auto" (final candidate selection)
+probe_hardening = true    # drop harmful probes the baseline model does not refuse to
+                           # (keeps direction computation and the surrogate metric tight;
+                           #  disable with --no-probe-hardening)
+
+# Workspace (optional).
+# Default: ./tq_workspace/<model-name>, created relative to the directory you
+# launch the command from. All caches, checkpoints, reports and the exported
+# model are kept under that folder. Uncomment to use a fixed directory instead:
+# workdir = "my_workspace"
+
+# HuggingFace Hub upload of the exported model (optional, non-interactive).
+# The suffix "-Tema_Q-Abliterated" is appended to the repository name
+# automatically. Without these keys the tool asks interactively after export
+# (TTY) or skips the upload (non-interactive).
+# hf_repo = "my-uncensored"           # -> <your-username>/my-uncensored-Tema_Q-Abliterated
+# hf_token = "hf_xxxxxxxxxxxx"        # write-access API token
+
+# Additional settings (can also be given on the command line)
+# language = "en"         # "en" / "jp" (output log language)
+# time_budget_min = 0.0   # soft time budget for the search phase (minutes, 0 = unlimited)
+# verify_dataset = "mlabonne/harmful_behaviors"   # HF dataset for verification prompts
+#                                                # (uses the first verify_probes rows; the test
+#                                                #  split is preferred when available)
+
+# Memory plan. "auto" decides from free memory:
+#   "auto"      -> bf16 / int8 / int4 / streaming load, selected automatically
+#   "int4"      -> INT4 weight-only quantized evaluation (~1/3.6 of bf16 memory;
+#                  models that do not fit in bulk use streaming load)
+#   "int8"      -> INT8 dynamic quantization (CPU only)
+#   "bfloat16"  -> no quantization
+# eval_dtype = "auto"
+# dequant_cache_gb = -1.0  # INT4 dequantized-weight cache budget (GB); negative = auto
+
+# Probes can also be sourced from HuggingFace datasets (optional).
+# Requires the datasets library: pip install "temaq-abliterated[datasets]"
+# [harmful_dataset]
+# dataset = "mlabonne/harmful_behaviors"
+# split = "test[:200]"
+# column = "text"
+
+# [harmless_dataset]
+# dataset = "mlabonne/harmless_alpaca"
+# split = "test[:200]"
+# column = "text"
