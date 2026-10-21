@@ -1,4 +1,4 @@
-# temaq-abliterated example settings file (v1.0.0)
+# temaq-abliterated example settings file (v1.1.0)
 # Copy this file to config.toml and run:
 # temaq-abliterated Qwen/Qwen3.5-4B --config config.toml
 # Explicit CLI flags always take precedence over this file.

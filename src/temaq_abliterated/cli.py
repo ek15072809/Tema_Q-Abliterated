@@ -75,6 +75,16 @@ def _safetensors_key_map(model, model_dir: Path, registry) -> dict[str, tuple[st
       - 融合形式:   "...experts.down_proj"            (3Dテンソル, 実Flash-Next形式)
       - 分割形式:   "...experts.{e}.down_proj.weight" (専門家ごとの2D)
     両方を key_map に登録する (エクスポートは sd[key] の次元で自動判別)。
+
+    [v11] transformers 5.x には「メモリ上の名前」と「チェックポイント上の名前」が
+    異なるアーキテクチャがある (変換マッピング)。例:
+      - DeepSeek V4系:  self_attn.o_b_proj → attn.wo_b / mlp → ffn
+      - Lfm2Moe (LFM2.5-24B-A2B): 融合専門家 mlp/feed_forward.experts.down_proj
+        はチェックポイントでは "...experts.{e}.w2.weight" (w1/w2/w3分割形式)
+    これらにも出力書き換えが届くよう、transformersの逆変換
+    (revert_weight_conversion) で導かれるチェックポイント形式名と
+    w2分割形式名を候補に加える。変換を持たないモデルでは恒等変換となり
+    従来候補と重複するだけで挙動は変わらない。
     """
     from safetensors import safe_open
     all_keys: set[str] = set()
@@ -83,6 +93,15 @@ def _safetensors_key_map(model, model_dir: Path, registry) -> dict[str, tuple[st
             with safe_open(str(f), framework="pt") as fh:
                 all_keys.update(fh.keys())
     path_of = {id(mod): path for path, mod in model.named_modules()}
+
+    def _ckpt_alias(model, name: str, tensor) -> list[str]:
+        """[v11] メモリ上パラメータ名1つをチェックポイント形式名へ逆変換する。"""
+        try:
+            from transformers.core_model_loading import revert_weight_conversion
+            return list(revert_weight_conversion(model, {name: tensor}).keys())
+        except Exception:
+            return []
+
     key_map: dict[str, tuple[str, int]] = {}
     missed = 0
     for comp in registry.components:
@@ -92,13 +111,28 @@ def _safetensors_key_map(model, model_dir: Path, registry) -> dict[str, tuple[st
                 if path is None:
                     continue
                 if tm.fused:
-                    candidates = [f"{path}.{tm.weight_attr}"]
+                    base_name = f"{path}.{tm.weight_attr}"
                     # 分割形式 (専門家ごとの2Dキー)。gate_up は対象外 (downのみ)
+                    candidates = [base_name]
                     for e in range(tm.n_experts):
                         candidates.append(f"{path}.{e}.{tm.weight_attr}.weight")
+                        # [v11] Lfm2Moe等: 専門家2Dは w2 命名で保存される
+                        candidates.append(f"{path}.{e}.w2.weight")
+                    try:
+                        candidates += _ckpt_alias(model, base_name, tm.weight())
+                    except Exception:
+                        pass
                 else:
+                    base_name = f"{path}.{tm.weight_attr}"
                     candidates = [f"{path}.{tm.weight_attr}",
                                   f"{path}.{tm.weight_attr}.weight"]
+                    try:
+                        w = tm.weight()
+                        if torch.is_tensor(w):
+                            # base_name が既に完全なパラメータ名 (weight_attr="weight")
+                            candidates += _ckpt_alias(model, base_name, w)
+                    except Exception:
+                        pass
                 hit = False
                 for key in candidates:
                     if key in all_keys:

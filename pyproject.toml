@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "temaq-abliterated"
-version = "1.0.0"
+version = "1.1.0"
 description = "Exploratory weight-uncensoring tool for LLMs (SCAPE algorithm: floor-calibrated surrogate objective, structured seed-grid initialization, flat full-band kernels, first-token verification gate with user confirmation, checkpoint resume with pre-load re-run menu, HuggingFace Hub upload)."
 readme = "README.md"
 license = { text = "MIT" }

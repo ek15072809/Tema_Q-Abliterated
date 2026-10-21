@@ -76,9 +76,24 @@ def resolve_model_dir(model_ref: str, cache_root: Path) -> Path:
         # README.md/LICENSE は出力モデルのモデルカード (frontmatter・ライセンス
         # 継承) に必要なため同時に取得する。
         allow_patterns=["*.safetensors", "*.json", "*.txt", "*.model", "*.jinja",
-                        "README.md", "LICENSE", "LICENSE.md", "LICENSE.txt"],
+                        "*.py", "README.md", "LICENSE", "LICENSE.md", "LICENSE.txt"],
     )
     return Path(path)
+
+
+def _needs_remote_code(model_dir: Path) -> bool:
+    """[v11] config.json が auto_map (リモートコード) を持つかどうか。
+
+    例: XHToken/Spark-X2.6-4B (Spark2_5ForCausalLM) はモデル実装を
+    リポジトリ内の .py ファイル (auto_map) として配布しているため、
+    読み込みに trust_remote_code=True が必要になる。
+    """
+    try:
+        with open(model_dir / "config.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return bool(cfg.get("auto_map"))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- トークナイザ (v3)
@@ -136,13 +151,19 @@ def load_tokenizer_quiet(model_dir: Path, verbose: bool = True):
                             ("mistral", "voxtral", "pixtral"))
     apply_fix = is_mistral_family and pt_kind in ("split", "sequence:Split")
 
+    # [v11] auto_map (リモートコード) を持つモデルはtrust_remote_codeで読む
+    trust_rc = _needs_remote_code(model_dir)
+    if trust_rc:
+        print(tr("model_remote_code"))
     try:
         tok = AutoTokenizer.from_pretrained(
-            str(model_dir), fix_mistral_regex=True if apply_fix else False)
+            str(model_dir), trust_remote_code=trust_rc,
+            fix_mistral_regex=True if apply_fix else False)
     except TypeError:
-        tok = AutoTokenizer.from_pretrained(str(model_dir))
+        # fix_mistral_regex 非対応の古いtransformers (trust_remote_codeは維持)
+        tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=trust_rc)
     except Exception:
-        tok = AutoTokenizer.from_pretrained(str(model_dir))
+        tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=trust_rc)
 
     if verbose:
         if apply_fix:
@@ -188,19 +209,26 @@ def load_model(model_dir: Path, env: EnvReport, eval_dtype: str, device: str) ->
             with open(model_dir / "config.json", encoding="utf-8") as f:
                 cfg = json.load(f)
             is_vlm = "vision_config" in cfg or any("vision" in k.lower() for k in cfg.keys())
+            # [v11] auto_map (リモートコード) を持つモデルはtrust_remote_codeで読む
+            trust_rc = _needs_remote_code(model_dir)
+            if trust_rc:
+                print(tr("model_remote_code"))
             if is_vlm:
                 try:
                     from transformers import AutoModelForImageTextToText
-                    model = AutoModelForImageTextToText.from_pretrained(str(model_dir), dtype=dtype)
+                    model = AutoModelForImageTextToText.from_pretrained(
+                        str(model_dir), dtype=dtype, trust_remote_code=trust_rc)
                 except Exception:
-                    model = AutoModelForCausalLM.from_pretrained(str(model_dir), dtype=dtype)
+                    model = AutoModelForCausalLM.from_pretrained(
+                        str(model_dir), dtype=dtype, trust_remote_code=trust_rc)
             else:
-                model = AutoModelForCausalLM.from_pretrained(str(model_dir), dtype=dtype)
+                model = AutoModelForCausalLM.from_pretrained(
+                    str(model_dir), dtype=dtype, trust_remote_code=trust_rc)
 
             model = model.to(device)
             model.eval()
             # 動作確認 (NaNなどが出るdtypeを弾く)
-            tok = AutoTokenizer.from_pretrained(str(model_dir))
+            tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=trust_rc)
             ids = tok("Hi", return_tensors="pt").to(device)
             with torch.no_grad():
                 out = model(**ids, use_cache=False)
@@ -356,12 +384,16 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
     print(tr("stream_title"))
     auto_cls, cfg_raw = _model_class_for(model_dir)
     from transformers import AutoConfig
-    cfg = AutoConfig.from_pretrained(str(model_dir))
+    # [v11] auto_map (リモートコード) を持つモデルはtrust_remote_codeで読む
+    trust_rc = _needs_remote_code(model_dir)
+    if trust_rc:
+        print(tr("model_remote_code"))
+    cfg = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_rc)
 
     # --- 1) 骨組みをメタパラメータで構築 (バッファは実テンソル) ---
     with _params_on_meta():
         try:
-            model = auto_cls.from_config(cfg)
+            model = auto_cls.from_config(cfg, trust_remote_code=trust_rc)
         except Exception:
             import transformers
             arch = cfg_raw.get("architectures", [""])[0]
@@ -393,7 +425,8 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
     import re as _re
     _expert_split_re = _re.compile(
         r"^(?P<base>.*)\.experts\.(?P<e>\d+)\."
-        r"(?P<t>down_proj|gate_proj|up_proj|gate_up_proj)(?:\.weight)?$")
+        r"(?P<t>down_proj|gate_proj|up_proj|gate_up_proj|w1|w2|w3)(?:\.weight)?$")
+    # [v11] w1/w2/w3 (Lfm2Moe等のチェックポイント書式) も分割形式として扱う
     # [v6] PLEのngram埋め込み等はチェックポイント上で "shard_N" 分割されている
     # (transformersのWeightConverter: Concatenate(dim=0))。数値順に連結して復元する。
     _shard_re = _re.compile(r"^(?P<base>.*)\.shard_(?P<idx>\d+)(?P<rest>\.weight)?$")
@@ -451,20 +484,29 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
             tensors = stash["tensors"]
             E = int(container.num_experts)
             try:
-                have_down = all(e in tensors and "down_proj" in tensors[e]
+                # [v11] 専門家2Dの属性名は down_proj または w2 (Lfm2Moe等)
+                t0 = tensors.get(0, {})
+                dn_name = "down_proj" if "down_proj" in t0 else "w2"
+                have_down = all(e in tensors and dn_name in tensors[e]
                                 for e in range(E))
                 have_gu = all(
                     e in tensors and (("gate_proj" in tensors[e] and "up_proj" in tensors[e])
-                                      or "gate_up_proj" in tensors[e])
+                                      or "gate_up_proj" in tensors[e]
+                                      or ("w1" in tensors[e] and "w3" in tensors[e]))
                     for e in range(E))
                 if not (have_down and have_gu):
                     raise RuntimeError("incomplete split-expert tensors")
-                dn = _stack_split(tensors, "down_proj", E)
+                dn = _stack_split(tensors, dn_name, E)
                 if "gate_up_proj" in tensors[0]:
                     gu = _stack_split(tensors, "gate_up_proj", E)
-                else:
+                elif "gate_proj" in tensors[0]:
                     gu = torch.stack([
                         torch.cat([tensors[e]["gate_proj"], tensors[e]["up_proj"]], dim=0)
+                        for e in range(E)])
+                else:
+                    # [v11] w1 (gate) / w3 (up) の並びで gate_up へ連結する
+                    gu = torch.stack([
+                        torch.cat([tensors[e]["w1"], tensors[e]["w3"]], dim=0)
                         for e in range(E)])
                 if quant == "int4" and id(container) not in keep:
                     from .quant4 import PackedInt4FusedExperts
@@ -675,9 +717,14 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
     if lm is not None and isinstance(getattr(lm, "weight", None), torch.Tensor) \
             and lm.weight.is_meta:
         from .arch import get_text_model
-        emb_w = get_text_model(model).embed_tokens.weight
-        if not emb_w.is_meta:
-            lm.weight = emb_w
+        # [v11] 埋め込み属性名は embed_tokens 以外に embedding
+        # (リモートコード系: Spark2_5等) も許容する
+        core = get_text_model(model)
+        emb = getattr(core, "embed_tokens", None)
+        if emb is None:
+            emb = getattr(core, "embedding", None)
+        if emb is not None and hasattr(emb, "weight") and not emb.weight.is_meta:
+            lm.weight = emb.weight
     try:
         from transformers import GenerationConfig
         model.generation_config = GenerationConfig.from_pretrained(str(model_dir))
@@ -691,7 +738,7 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
     model = model.to(device)
     model.eval()
     from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(str(model_dir))
+    tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=trust_rc)
     ids = tok("Hi", return_tensors="pt").to(device)
     with torch.no_grad():
         out = model(**ids, use_cache=False)
@@ -798,6 +845,17 @@ def export_model(
         if name in SIDECAR_NAMES:
             shutil.copyfile(model_dir / name, out_dir / name)
             copied += 1
+    # [v11] リモートコード (modeling_*.py / configuration_*.py 等) が同梱されて
+    # いれば出力モデルにも引き継ぐ (trust_remote_code必須のモデルでも出力後
+    # 単体で読み込めるようにする)。ネイティブ実装のモデルは .py を持たない
+    # ため、このループは何もしない (既存の挙動は不変)。
+    for name in os.listdir(model_dir):
+        if name.endswith(".py"):
+            try:
+                shutil.copyfile(model_dir / name, out_dir / name)
+                copied += 1
+            except OSError:
+                pass
     print(tr("export_sidecar", n=copied))
     return out_dir
 
@@ -900,14 +958,17 @@ def read_tensor(model_dir: Path, key: str) -> tuple[torch.Tensor, str]:
 def export_params_card(out_dir: Path, record: dict[str, Any],
                        model_dir: Path | None = None,
                        base_model_ref: str | None = None,
-                       version: str = "1.0.0") -> None:
+                       version: str = "1.1.0") -> None:
     """出力モデルに HuggingFace Hub 形式のモデルカード (README.md) を添付する。
 
     [仕様]
     - 元モデルに README.md がある場合:
       YAML frontmatter (--- ～ ---) を保存し、tags に ``Tema_Q-Abliterated``
       を追加してから、frontmatterと元の本文の「間」に本ツールの説明
-      (英語) を挟んだ形で出力する。base_model / library_name が無ければ補う。
+      (英語) を挟んだ形で出力する。library_name が無ければ補う。
+    - [v11] base_model は「出力モデルの元モデル」を常に指す。元カードが
+      別の上位モデルを base_model に持っていても上書きする
+      (base_model_ref は HFリポジトリID指定時のみ判明する)。
     - 元モデルに README.md がない場合:
       frontmatter (library_name / tags / base_model) 付きの完全なカードを新規生成する。
     - パラメータ表は英語見出し「Abliteration parameters」で、外部ツールとの
@@ -930,7 +991,8 @@ def export_params_card(out_dir: Path, record: dict[str, Any],
     has_original_card = orig_text is not None
     front_yaml = _card_add_tag(front_yaml, "Tema_Q-Abliterated")
     if base_model_ref:
-        front_yaml = _card_ensure_key(front_yaml, "base_model", base_model_ref)
+        # [v11] base_model は「出力モデルの元モデル」を常に指す (既存値は置換)
+        front_yaml = _card_set_key(front_yaml, "base_model", base_model_ref)
     front_yaml = _card_ensure_key(front_yaml, "library_name", "transformers")
 
     section = _card_tool_section(record, base_model_ref=base_model_ref,
@@ -1031,6 +1093,31 @@ def _card_ensure_key(yaml_text: str, key: str, value: str) -> str:
             break
     lines.insert(insert_at, line)
     return "\n".join(lines)
+
+
+def _card_set_key(yaml_text: str, key: str, value: str) -> str:
+    """[v11] frontmatterの key を value で常に設定する (既存値は置換)。
+
+    出力モデルの base_model は「元モデル」を常に指させる必要があるため、
+    元カードが別の上位モデル (ファインチューニング元等) を base_model に
+    持っていても上書きする。フローリスト (``key: [a, b]``) 形式の値も
+    単一値に置き換え、重複する同一キー行は先頭の1行にまとめる。
+    キーが無い場合は _card_ensure_key と同じ位置へ挿入する。
+    """
+    lines = yaml_text.split("\n") if yaml_text else []
+    if not any(re.match(rf"^{key}:\s*\S", ln) for ln in lines):
+        return _card_ensure_key(yaml_text, key, value)
+    line = f"{key}: {value}"
+    out: list[str] = []
+    replaced = False
+    for ln in lines:
+        if re.match(rf"^{key}:\s*\S", ln):
+            if not replaced:
+                out.append(line)
+                replaced = True
+        else:
+            out.append(ln)
+    return "\n".join(out)
 
 
 def _card_tool_section(record: dict[str, Any], *, base_model_ref: str | None,

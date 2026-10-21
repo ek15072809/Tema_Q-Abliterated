@@ -1,10 +1,20 @@
 # -*- coding: utf-8 -*-
-"""temaq_abliterated: LLMの方向指向削除(非検閲化)を探索的に実行するツール (v1.0.0)。
+"""temaq_abliterated: LLMの方向指向削除(非検閲化)を探索的に実行するツール (v1.1.0)。
 
 SCAPE (Structured Cached Abliteration with Prefix Evaluation) と呼ぶ
 独自の効率化探索アルゴリズムによって、GPUがないCPU環境でも
 (INT4量子化・メモリガード・多位置KL・候補選択UI搭載)、
 実用的な速度でウェイト空間上の最適な非検閲化パラメータを探索する。
+
+v1.1.0 の変更 (既存機能はそのまま維持):
+  - 新規アーキテクチャ対応:
+      * XHToken/Spark-X2.6-4B (auto_mapリモートコード: trust_remote_code読み込み、
+        リモートコード (*.py) のダウンロードと出力モデルへの同梱)
+      * deepseek-ai/DeepSeek-V4.1-Flash-1017 (分组低ランク出力射影 o_b_proj、
+        複数形の共有専門家 mlp.shared_experts、mHC 4Dストリーム隠れ状態)
+      * LiquidAI/LFM2.5-24B-A2B (feed_forward直下の融合3D専門家)
+  - 出力モデルのモデルカード (README.md) の base_model は「元モデル」を
+    常に指すよう変更 (元カードが別の上位モデルを指していても上書き)
 
 v1.0.0 の主な機能:
   - シードグリッドによる構造化初期化: 強度×帯幅スペクトル (基底 /
@@ -28,5 +38,5 @@ v1.0.0 の主な機能:
     対話的にHuggingFace Hubへアップロードできる (--hf-repo/--hf-token)
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["cli"]

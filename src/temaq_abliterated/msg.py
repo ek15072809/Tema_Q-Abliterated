@@ -58,6 +58,9 @@ _CATALOG: dict[str, dict[str, str]] = {
     "model_local_path": {"en": "  Local path: {path}", "jp": "  ローカルパス: {path}"},
     "model_hf_fetch": {"en": "  Downloading model from HuggingFace: {model}", "jp": "  HuggingFaceからモデルを取得します: {model}"},
     "model_hf_cache": {"en": "  Cache destination: {path}", "jp": "  キャッシュ先: {path}"},
+    "model_remote_code": {
+        "en": "  Remote code detected in config.json (auto_map) - loading with trust_remote_code=True.",
+        "jp": "  config.jsonにリモートコード (auto_map) を検出しました。trust_remote_code=True で読み込みます。"},
     "model_loaded_dtype": {"en": "  Model loaded in {dt} (parameters: {n}B)",
                            "jp": "  モデルを {dt} で読み込みました (パラメータ数: {n}B)"},
     "model_load_fail_dtype": {"en": "  Loading in {dt} failed: {etype}: {e}",

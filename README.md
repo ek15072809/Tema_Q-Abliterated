@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-1.0.0-informational.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.1.0-informational.svg)](pyproject.toml)
 [![PyPI](https://img.shields.io/pypi/v/temaq-abliterated)](https://pypi.org/project/temaq-abliterated/)
 
 [Overview](#overview) •
@@ -70,7 +70,7 @@ Speed comes from three techniques: a **rank-1 hook** (no weight rewriting per tr
 - **INT4 evaluation and memory guard** — Weights use about 1/3.6 the memory of bf16, with streaming load, an elastic cache, and automatic OOM fallback.
 - **Safe export** — If no candidate passes the verification gate, nothing is exported without your confirmation.
 - **Interrupt and resume** — A checkpoint is saved after every trial; on re-run, resume options appear before model loading.
-- **Hugging Face integration** — Optional upload after export (the repository name automatically gets the suffix `-Tema_Q-Abliterated`), plus an auto-generated model card that keeps the original model's tags.
+- **Hugging Face integration** — Optional upload after export (the repository name automatically gets the suffix `-Tema_Q-Abliterated`), plus an auto-generated model card that keeps the original model's tags and always points `base_model` at the original model.
 - **Minimal dependencies** — Only torch, transformers, safetensors, huggingface-hub, matplotlib, and psutil (no Optuna, PEFT, or bitsandbytes).
 
 ---
@@ -81,7 +81,7 @@ Speed comes from three techniques: a **rank-1 hook** (no weight rewriting per tr
 
 - Python 3.10 or higher
 - PyTorch 2.2 or higher (install beforehand for your environment)
-- transformers 5.x for the Qwen4Exp and Gemma4 series
+- transformers 5.x for the Qwen4Exp and Gemma4 series (DeepSeek V4.1 needs 5.6+; LFM2.5-24B-A2B needs a version that supports `lfm2_moe`)
 
 ### From PyPI (recommended)
 
@@ -284,12 +284,13 @@ heretic was run in a reduced configuration (85 and 95 trials) so that results wo
 
 Model structure is detected automatically by attribute probing:
 
-- **Attention output projection**: `self_attn.o_proj`, `out_proj`, `linear_attn.out_proj`, etc.
-- **MLP down projection**: `mlp.down_proj`, fused 3D expert tensors, `layer.experts`, etc.
+- **Attention output projection**: `self_attn.o_proj`, `out_proj`, `o_b_proj` (DeepSeek V4-series grouped low-rank output projection), `linear_attn.out_proj`, etc.
+- **MLP down projection**: `mlp.down_proj`, fused 3D expert tensors (under `mlp` **and** `feed_forward`, as in LFM2.5-24B-A2B), shared experts (`shared_expert` / `shared_experts`), `layer.experts`, etc.
 - Dense, MoE, hybrid linear attention, and multimodal models (language-model part)
-- Hyper-connection width mismatch in the Qwen4Exp series
+- Hyper-connection width mismatch in the Qwen4Exp series, and the 4D multi-stream (mHC) residual states of the DeepSeek V4 series
 - Shared-KV safe bypass depth in the Gemma4 series
 - Automatic resolution of the language backbone in VLMs
+- Remote-code models shipped with `auto_map` (e.g. XHToken/Spark-X2.6-4B): downloaded and loaded with `trust_remote_code=True`, and the code files are carried over to the exported model
 
 All 8 automated tests with synthetic tiny models pass, and the numerical equivalence of the partial forward pass was confirmed to match exactly on real hardware.
 

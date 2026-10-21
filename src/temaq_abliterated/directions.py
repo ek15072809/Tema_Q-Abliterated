@@ -224,6 +224,12 @@ def _probe_hidden_widths(model, tokenizer, device, system_prompt, response_prefi
         inputs = tokenizer([prompt + response_prefix], return_tensors="pt").to(device)
         with torch.no_grad():
             out = model(**inputs, use_cache=False, output_hidden_states=True)
+        # [v11] 3D (B,T,D) 以外の隠れ状態 (DeepSeek V4系のmHC: (B,T,hc_mult,D)
+        # 4Dストリーム) は混合幅として扱う。末元の幅はどちらもDのため幅比較で
+        # は検出できず、残差方向を誤った軸で正規化してしまう。この場合は既存の
+        # 「モジュール出力方向」経路 (ハイパーコネクション対応) へ切替える。
+        if any(h.dim() != 3 for h in out.hidden_states):
+            return []
         return [int(h.shape[-1]) for h in out.hidden_states]
     except Exception:
         return []

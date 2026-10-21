@@ -18,6 +18,14 @@
   - **共有専門家** (Qwen4Exp: mlp.shared_expert, 標準MLPと同じ構造)
   - ``layer.experts`` (Gemma4-MoEはmlpの外側に experts を持つ)
 
+[v11] 追加対応 (Spark-X2.6-4B / DeepSeek-V4.1-Flash / LFM2.5-24B-A2B):
+  - ``self_attn.o_b_proj`` (DeepSeek V4系の分组低ランク出力射影の最終段:
+    o_a_proj (グループ別) → o_b_proj (hiddenへの混合)。残差ストリームに
+    載るのは o_b_proj の出力のため、こちらを摂動対象とする)
+  - ``mlp.shared_experts.down_proj`` (DeepSeek V3/V4系: 複数形)
+  - ``feed_forward.experts`` が融合3Dコンテナの場合 (Lfm2Moe:
+    LFM2.5-24B-A2B 等)。従来の mlp.experts と同様に3D摂動を適用する
+
 対象モジュールは TargetModule で表現する:
   module     = 体重を持つモジュール (nn.Linear または専門家コンテナ)
   weight_attr= "weight" (nn.Linear) / "down_proj" (融合専門家)
@@ -135,6 +143,9 @@ def get_layer_components(layer: nn.Module) -> dict[str, list[TargetModule]]:
     if sa is not None:
         _try_add(modules, "attn_out", getattr(sa, "o_proj", None))
         _try_add(modules, "attn_out", getattr(sa, "out_proj", None))
+        # [v11] DeepSeek V4系: 分组低ランク出力射影 o_a_proj (グループ別) →
+        # o_b_proj (hiddenへの混合)。残差ストリームに載るのは o_b_proj の出力。
+        _try_add(modules, "attn_out", getattr(sa, "o_b_proj", None))
     # ハイブリッド線形注意 (Qwen3.5/Qwen4Exp系): linear_attn / linear_attention の out_proj
     for la_name in ("linear_attn", "linear_attention"):
         la = getattr(layer, la_name, None)
@@ -150,6 +161,8 @@ def get_layer_components(layer: nn.Module) -> dict[str, list[TargetModule]]:
         _try_add(modules, "mlp_down", getattr(mlp, "down_proj", None))
         # 共有専門家 (Qwen4Exp: 標準MLP構造の shared_expert)
         _try_add(modules, "mlp_down", getattr(getattr(mlp, "shared_expert", None), "down_proj", None))
+        # [v11] 共有専門家 (DeepSeek V3/V4系: 複数形 shared_experts)
+        _try_add(modules, "mlp_down", getattr(getattr(mlp, "shared_experts", None), "down_proj", None))
         experts = getattr(mlp, "experts", None)
         if experts is not None:
             fused_attr = _detect_fused_experts(experts)
@@ -182,6 +195,13 @@ def get_layer_components(layer: nn.Module) -> dict[str, list[TargetModule]]:
     ff = getattr(layer, "feed_forward", None)
     if ff is not None:
         _try_add(modules, "mlp_down", getattr(ff, "w2", None))
+        # [v11] 融合3D専門家 (Lfm2Moe: LFM2.5-24B-A2B 等は feed_forward.experts が
+        # 3D Parameterコンテナ。mlp.experts と同じ扱いにする)
+        ff_experts = getattr(ff, "experts", None)
+        if ff_experts is not None:
+            fused_attr = _detect_fused_experts(ff_experts)
+            if fused_attr is not None:
+                _try_add(modules, "mlp_down", ff_experts, weight_attr=fused_attr, fused=True)
         try:
             for expert in getattr(ff, "experts", []):
                 _try_add(modules, "mlp_down", getattr(expert, "w2", None))
