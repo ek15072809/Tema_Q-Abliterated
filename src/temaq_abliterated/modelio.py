@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,105 @@ def _needs_remote_code(model_dir: Path) -> bool:
         return bool(cfg.get("auto_map"))
     except Exception:
         return False
+
+
+# ------------------------------------------------ リモートコード互換 (v11.1)
+
+#: transformers 4.x向けリモートコードの _tied_weights_keys (list形式) を5.x形式
+#: (dict) へ変換する際の、入力埋め込み側のキー正規表現。5.xの展開機能
+#: (get_expanded_tied_weights_keys) が実行時に対象パラメータ名から解決する。
+_REMOTE_EMBED_KEY_RE = r"(?:.*\.)?(?:embed_tokens|embedding|tok_embeddings|wte)\.weight"
+
+
+def _make_mask_compat_wrapper(fn):
+    """transformers 4.x向けリモートコードのマスク生成呼び出しを吸収するラッパ。
+
+    4.x時代の引数名 (input_embeds) と 5.xの引数名 (inputs_embeds)、および
+    5.xで廃止された cache_position の差異をリトライで吸収する。
+    現在のtransformersがそのまま受け付ける呼び出しは最初の試行で成功する
+    ため、挙動は一切変わらない (パススルー)。
+    """
+    def _wrap(**kwargs):
+        try:
+            return fn(**kwargs)
+        except TypeError:
+            kw = dict(kwargs)
+            if "input_embeds" in kw and "inputs_embeds" not in kw:
+                kw["inputs_embeds"] = kw.pop("input_embeds")
+            try:
+                return fn(**kw)
+            except TypeError:
+                kw.pop("cache_position", None)
+                return fn(**kw)
+    _wrap.__name__ = getattr(fn, "__name__", "mask")
+    _wrap._tqa_compat = True
+    return _wrap
+
+
+def _apply_remote_code_compat(model_dir: Path):
+    """[v11.1] auto_map (リモートコード) モデルを現在のtransformersで読み込める
+    ようにする互換シムを適用する (メモリ上のクラスのみ。配布ファイルは不変)。
+
+    transformers 4.x向けに書かれたリモートコードには、5.xで読み込み・実行の
+    両方を失敗させる2つの非互換がある (XHToken/Spark-X2.6-4B で実際に確認):
+
+      1. _tied_weights_keys が list (4.x形式) → 5.xは dict を期待する。
+         post_init() 内の tied_mapping.keys() で
+         ``'list' object has no attribute 'keys'`` が発生し、from_config /
+         from_pretrained / 直接構築のすべてが失敗する。
+      2. create_causal_mask / create_sliding_window_causal_mask の引数名
+         (input_embeds → inputs_embeds、cache_position 廃止) → forward時の
+         全経路で TypeError が発生する。
+
+    本関数は auto_map からモデルクラスを解決し、(1) を list→dict 変換、
+    (2) をモジュール名前空間のラップで吸収する。変換が不要な形式
+    (5.x向けリモートコード等) の場合は何も変更しない。どの段階の失敗も
+    例外を投げず (既存の読み込み経路を最優先)、解決したクラスを返す。
+    """
+    try:
+        model_dir = Path(model_dir)
+        with open(model_dir / "config.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+        auto_map = cfg.get("auto_map") or {}
+        ref = None
+        for key in ("AutoModelForCausalLM", "AutoModelForImageTextToText", "AutoModel"):
+            if auto_map.get(key):
+                ref = auto_map[key]
+                break
+        if not ref:
+            return None
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        try:
+            model_cls = get_class_from_dynamic_module(
+                ref, str(model_dir), trust_remote_code=True)
+        except TypeError:
+            # 古いtransformers (4.x) は trust_remote_code 引数を持たない
+            model_cls = get_class_from_dynamic_module(ref, str(model_dir))
+    except Exception:
+        return None
+
+    # (1) _tied_weights_keys: 4.x形式 (list) → 5.x形式 (dict, 実行時展開)
+    try:
+        tk = getattr(model_cls, "_tied_weights_keys", None)
+        if isinstance(tk, list) and tk:
+            new_map = {k: _REMOTE_EMBED_KEY_RE for k in tk
+                       if isinstance(k, str) and k.endswith(".weight")}
+            if new_map:
+                model_cls._tied_weights_keys = new_map
+    except Exception:
+        pass
+
+    # (2) マスク生成関数の引数互換 (モジュール名前空間をラップ)
+    try:
+        module = sys.modules.get(model_cls.__module__)
+        if module is not None:
+            for fname in ("create_causal_mask", "create_sliding_window_causal_mask"):
+                fn = getattr(module, fname, None)
+                if callable(fn) and not getattr(fn, "_tqa_compat", False):
+                    setattr(module, fname, _make_mask_compat_wrapper(fn))
+    except Exception:
+        pass
+    return model_cls
 
 
 # ---------------------------------------------------------------- トークナイザ (v3)
@@ -198,6 +298,12 @@ def load_model(model_dir: Path, env: EnvReport, eval_dtype: str, device: str) ->
 
     # [v6] int4/int8は「量子化評価」の指定なのでベースはbf16で読み込み、
     # 呼び出し側 (build_int4/int8_eval_model) で量子化する
+    # [v11.1] auto_map (リモートコード) モデルは読み込み前に互換シムを適用する
+    # (transformers 4.x向けリモートコードを5.x環境でも読めるようにする)
+    trust_rc = _needs_remote_code(model_dir)
+    if trust_rc:
+        print(tr("model_remote_code"))
+        _apply_remote_code_compat(model_dir)
     last_error: Exception | None = None
     for dt in candidates:
         try:
@@ -209,10 +315,6 @@ def load_model(model_dir: Path, env: EnvReport, eval_dtype: str, device: str) ->
             with open(model_dir / "config.json", encoding="utf-8") as f:
                 cfg = json.load(f)
             is_vlm = "vision_config" in cfg or any("vision" in k.lower() for k in cfg.keys())
-            # [v11] auto_map (リモートコード) を持つモデルはtrust_remote_codeで読む
-            trust_rc = _needs_remote_code(model_dir)
-            if trust_rc:
-                print(tr("model_remote_code"))
             if is_vlm:
                 try:
                     from transformers import AutoModelForImageTextToText
@@ -386,8 +488,12 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
     from transformers import AutoConfig
     # [v11] auto_map (リモートコード) を持つモデルはtrust_remote_codeで読む
     trust_rc = _needs_remote_code(model_dir)
+    remote_cls = None
     if trust_rc:
         print(tr("model_remote_code"))
+        # [v11.1] transformers 4.x向けリモートコードを現在のtransformersで
+        # 読めるようにする互換シム (5.xでの読み込み・forward失敗を修正)
+        remote_cls = _apply_remote_code_compat(model_dir)
     cfg = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_rc)
 
     # --- 1) 骨組みをメタパラメータで構築 (バッファは実テンソル) ---
@@ -395,9 +501,16 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
         try:
             model = auto_cls.from_config(cfg, trust_remote_code=trust_rc)
         except Exception:
-            import transformers
-            arch = cfg_raw.get("architectures", [""])[0]
-            model = getattr(transformers, arch)(cfg)
+            # [v11.1] from_config失敗時のフォールバック:
+            # リモートコードモデルは解決済みクラスを直接構築する。
+            # getattr(transformers, arch) はリモートコードでは必ず失敗し、
+            # 本来のエラーをAttributeErrorで隠してしまうため使わない。
+            if remote_cls is not None:
+                model = remote_cls(cfg)
+            else:
+                import transformers
+                arch = cfg_raw.get("architectures", [""])[0]
+                model = getattr(transformers, arch)(cfg)
     model.eval()
 
     # --- 2) 構造レジストリ (量子化前に摂動対象を確定) ---
@@ -578,7 +691,8 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
                     pass
             return False
 
-    def _int4_from_shard_slice(fh, key: str, mod: nn.Linear, group_size: int = 128):
+    def _int4_from_shard_slice(fh, key: str, mod: nn.Linear, group_size: int = 128,
+                               tgt_dtype: torch.dtype = torch.bfloat16):
         """[v7] safetensorsスライスを行チャンクで読みながらINT4パックする。
 
         従来 (v6) は fh.get_tensor(key) でテンソル全体を読んだうえで
@@ -604,8 +718,14 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
             t = sl[r0:r1]
             pack_into_buffers(packed, scale, t, r0, g)
             del t
+        # [v11.1] 互換用 .weight メタテンソルのdtypeには「評価dtype (tgt_dtype)」
+        # を使う。ストリーミング読み込みでは非量子化パラメータ (埋め込み・層ノルム・
+        # 摂動対象) がすべてtgt_dtypeへ鋳直されるため、リモートコードの forward が
+        # ``hidden_states.to(module.weight.dtype)`` で鋳直す先もtgt_dtypeで
+        # ある必要がある (チェックポイントのdtypeを使うとdtype混在で衝突する)。
         return PackedInt4Linear.from_packed(packed, scale, g, pad, in_f,
-                                            out_features=out_f, device=device)
+                                            out_features=out_f, device=device,
+                                            weight_dtype=tgt_dtype)
 
     def _drop_file_cache(fname: str) -> None:
         """[v7] 読み終えたシャードのページキャッシュをOSへ返す (Linux)。
@@ -637,7 +757,8 @@ def load_model_streamed(model_dir: Path, env: EnvReport, device: str = "cpu",
                     if (isinstance(mod, nn.Linear) and id(mod) not in keep
                             and mod.in_features >= MIN_IN_FEATURES):
                         try:
-                            new_mod = _int4_from_shard_slice(fh, key, mod, group_size)
+                            new_mod = _int4_from_shard_slice(fh, key, mod, group_size,
+                                                             tgt_dtype)
                             setattr(holder, parts[-2], new_mod)
                             n_swap += 1
                             swapped_bytes += new_mod.memory_bytes()
@@ -856,8 +977,109 @@ def export_model(
                 copied += 1
             except OSError:
                 pass
+    # [v11.1] 引き継いだリモートコード (*.py) が transformers 4.x向けの形式の
+    # 場合、出力モデルが transformers 5.x環境で単体読み込みできるように
+    # 互換ブロックを追記する (4.x環境の挙動は一切不変・元モデルは不変)。
+    n_compat = _patch_exported_remote_code(out_dir)
+    if n_compat:
+        print(tr("export_py_compat", n=n_compat))
     print(tr("export_sidecar", n=copied))
     return out_dir
+
+
+#: 出力先リモートコードに追記する互換ブロックの識別子 (二重追記防止)
+_REMOTE_COMPAT_MARKER = "Compatibility patch appended by Tema_Q-Abliterated"
+
+#: 出力先リモートコード (*.py) 末尾に追記する互換ブロック。
+#: 実行時 (import時) にバージョンを判定して _apply_remote_code_compat と
+#: 同等の変換を行うため、transformers 4.x環境では何も変わらない。
+_REMOTE_COMPAT_BLOCK = r'''
+
+# --- Compatibility patch appended by Tema_Q-Abliterated (v1.1.1, do not remove) ---
+# Makes this remote code loadable on transformers >= 5 while keeping identical
+# behavior on transformers 4.x (every change below is a pass-through when the
+# installed transformers already accepts the call as-is).
+def _tqa_mask_compat(fn):
+    def _tqa_wrap(**kwargs):
+        try:
+            return fn(**kwargs)
+        except TypeError:
+            kw = dict(kwargs)
+            if "input_embeds" in kw and "inputs_embeds" not in kw:
+                kw["inputs_embeds"] = kw.pop("input_embeds")
+            try:
+                return fn(**kw)
+            except TypeError:
+                kw.pop("cache_position", None)
+                return fn(**kw)
+    _tqa_wrap.__name__ = getattr(fn, "__name__", "mask")
+    _tqa_wrap._tqa_compat = True
+    return _tqa_wrap
+
+try:
+    for _tq_n in ("create_causal_mask", "create_sliding_window_causal_mask"):
+        _tq_f = globals().get(_tq_n)
+        if callable(_tq_f) and not getattr(_tq_f, "_tqa_compat", False):
+            globals()[_tq_n] = _tqa_mask_compat(_tq_f)
+except Exception:
+    pass
+try:
+    if int(__import__("transformers").__version__.split(".")[0]) >= 5:
+        for _tq_n, _tq_o in list(globals().items()):
+            if isinstance(_tq_o, type) and isinstance(
+                    getattr(_tq_o, "_tied_weights_keys", None), list):
+                _tq_o._tied_weights_keys = {
+                    _tq_k: r"(?:.*\.)?(?:embed_tokens|embedding|tok_embeddings|wte)\.weight"
+                    for _tq_k in _tq_o._tied_weights_keys
+                    if isinstance(_tq_k, str)}
+except Exception:
+    pass
+'''
+
+
+def _patch_exported_remote_code(out_dir: Path) -> int:
+    """[v11.1] 出力先にコピー済みのリモートコード (*.py) へ互換ブロックを追記。
+
+    transformers 4.x向けの記述 (list形式の _tied_weights_keys、旧引数名の
+    マスク生成呼び出し) を持つ .py ファイルにのみ、実行時自己適合型の
+    互換ブロックを末尾へ追記する。
+
+    - 対象は「出力ディレクトリにコピーされた .py」のみで、元モデルの
+      ファイルは一切変更しない (条件⑤⑳の徹底)
+    - ブロックは import 時にバージョン判定するため、4.x環境では挙動が
+      完全に不変
+    - 追記後は compile() で構文検査し、失敗する場合は追記しない
+    """
+    patched = 0
+    try:
+        names = os.listdir(out_dir)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.endswith(".py"):
+            continue
+        p = out_dir / name
+        try:
+            src = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if _REMOTE_COMPAT_MARKER in src:
+            continue   # 既に追記済み (二重追記しない)
+        needs = bool(re.search(r"_tied_weights_keys\s*=\s*\[", src)
+                     or re.search(r"[\"']input_embeds[\"']\s*:", src))
+        if not needs:
+            continue
+        new_src = src.rstrip("\n") + "\n" + _REMOTE_COMPAT_BLOCK + "\n"
+        try:
+            compile(new_src, str(p), "exec")
+        except SyntaxError:
+            continue
+        try:
+            p.write_text(new_src, encoding="utf-8")
+            patched += 1
+        except OSError:
+            pass
+    return patched
 
 
 def build_int8_eval_model(model: nn.Module, registry=None):
@@ -958,7 +1180,7 @@ def read_tensor(model_dir: Path, key: str) -> tuple[torch.Tensor, str]:
 def export_params_card(out_dir: Path, record: dict[str, Any],
                        model_dir: Path | None = None,
                        base_model_ref: str | None = None,
-                       version: str = "1.1.0") -> None:
+                       version: str = "1.1.1") -> None:
     """出力モデルに HuggingFace Hub 形式のモデルカード (README.md) を添付する。
 
     [仕様]

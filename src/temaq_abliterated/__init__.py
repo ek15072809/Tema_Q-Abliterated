@@ -1,10 +1,23 @@
 # -*- coding: utf-8 -*-
-"""temaq_abliterated: LLMの方向指向削除(非検閲化)を探索的に実行するツール (v1.1.0)。
+"""temaq_abliterated: LLMの方向指向削除(非検閲化)を探索的に実行するツール (v1.1.1)。
 
 SCAPE (Structured Cached Abliteration with Prefix Evaluation) と呼ぶ
 独自の効率化探索アルゴリズムによって、GPUがないCPU環境でも
 (INT4量子化・メモリガード・多位置KL・候補選択UI搭載)、
 実用的な速度でウェイト空間上の最適な非検閲化パラメータを探索する。
+
+v1.1.1 の変更 (既存機能はそのまま維持):
+  - transformers 4.x向けリモートコード (auto_map) モデルを transformers 5.x
+    環境で読み込めるようにする互換シムを追加。XHToken/Spark-X2.6-4B が
+    「'list' object has no attribute 'keys'」で読み込みに失敗する問題を
+    修正 (原因: 4.x形式の _tied_weights_keys (list) と旧引数名のマスク
+    生成呼び出し input_embeds/cache_position を5.xが受け付けない)
+  - ストリーミング読み込みのフォールバックを修正: リモートコード
+    モデルでは解決済みクラスを直接構築するようにし、本来のエラーが
+    AttributeError で隠れないようにした
+  - 出力モデルに引き継ぐリモートコード (*.py) に同じ互換処理の
+    自己適合ブロックを追記し、transformers 5.x環境で出力モデルが
+    単体で読み込めるようにした (4.x環境の挙動は一切不変)
 
 v1.1.0 の変更 (既存機能はそのまま維持):
   - 新規アーキテクチャ対応:
@@ -38,5 +51,5 @@ v1.0.0 の主な機能:
     対話的にHuggingFace Hubへアップロードできる (--hf-repo/--hf-token)
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __all__ = ["cli"]

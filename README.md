@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-1.1.0-informational.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.1.1-informational.svg)](pyproject.toml)
 [![PyPI](https://img.shields.io/pypi/v/temaq-abliterated)](https://pypi.org/project/temaq-abliterated/)
 
 [Overview](#overview) •
@@ -291,6 +291,7 @@ Model structure is detected automatically by attribute probing:
 - Shared-KV safe bypass depth in the Gemma4 series
 - Automatic resolution of the language backbone in VLMs
 - Remote-code models shipped with `auto_map` (e.g. XHToken/Spark-X2.6-4B): downloaded and loaded with `trust_remote_code=True`, and the code files are carried over to the exported model
+- Remote code written for transformers 4.x also runs on transformers 5.x: a runtime compatibility shim handles the `_tied_weights_keys` (list → dict) and mask-creation argument changes during loading, and the exported code files carry a self-adapting compatibility block so the output model loads on both 4.x and 5.x (behavior on 4.x is unchanged)
 
 All 8 automated tests with synthetic tiny models pass, and the numerical equivalence of the partial forward pass was confirmed to match exactly on real hardware.
 

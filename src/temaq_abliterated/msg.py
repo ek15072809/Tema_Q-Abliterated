@@ -297,6 +297,9 @@ _CATALOG: dict[str, dict[str, str]] = {
     "export_shard": {"en": "    Written: {f}{extra}", "jp": "    書き出し: {f}{extra}"},
     "export_changed": {"en": " (perturbed {n} tensors)", "jp": " (摂動適用 {n}テナソル)"},
     "export_sidecar": {"en": "    Copied {n} sidecar files", "jp": "    サイドカーファイル {n}件をコピーしました"},
+    "export_py_compat": {
+        "en": "    Appended transformers>=5 compatibility block to {n} remote-code file(s)",
+        "jp": "    リモートコード {n}ファイルに transformers>=5 対応ブロックを追記しました"},
     "export_same_dir": {"en": "Output directory equals the source model directory.",
                         "jp": "出力先が元モデルのディレクトリと同一です。"},
     "export_inside_dir": {"en": "Output directory is inside the source model directory.",

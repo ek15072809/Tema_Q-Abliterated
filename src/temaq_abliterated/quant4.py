@@ -227,6 +227,10 @@ class PackedInt4Linear(nn.Module):
         self.in_features = int(weight.shape[1])
         self.group_size = g
         self.pad = pad
+        # [v11.1] 元重みのdtype (互換用 .weight メタテンソルのdtypeとして使用。
+        # リモートコードの forward には hidden_states.to(module.weight.dtype)
+        # のような参照があり、量子化で .weight が無くなると動作しなくなる)
+        self._weight_dtype = weight.dtype
         self.register_buffer("qweight", packed.to(dev), persistent=False)
         self.register_buffer("scale", scale.to(dev), persistent=False)
         if bias is not None:
@@ -245,10 +249,13 @@ class PackedInt4Linear(nn.Module):
     @classmethod
     def from_packed(cls, packed: torch.Tensor, scale: torch.Tensor, group_size: int,
                     pad: int, in_features: int, out_features: int | None = None,
-                    bias: torch.Tensor | None = None, device: str | None = None):
+                    bias: torch.Tensor | None = None, device: str | None = None,
+                    weight_dtype: torch.dtype | None = None):
         """[v7] ストリーミング読み込み用: パック済みバッファから直接構築する。
 
         pack_into_buffers() で行チャンク単位に埋めた packed/scale を渡す。
+        [v11.1] weight_dtype: 元チェックポイントテンソルのdtype (互換用
+        .weight メタテンソルに使う。省略時はbfloat16)。
         """
         obj = cls.__new__(cls)
         nn.Module.__init__(obj)
@@ -257,6 +264,7 @@ class PackedInt4Linear(nn.Module):
         obj.in_features = int(in_features)
         obj.group_size = int(group_size)
         obj.pad = int(pad)
+        obj._weight_dtype = weight_dtype or torch.bfloat16
         obj.register_buffer("qweight", packed.to(dev), persistent=False)
         obj.register_buffer("scale", scale.to(dev), persistent=False)
         if bias is not None:
@@ -272,6 +280,25 @@ class PackedInt4Linear(nn.Module):
         import weakref
         PackedInt4Linear._ALL.append(weakref.ref(obj))
         return obj
+
+    @property
+    def weight(self) -> torch.Tensor:
+        """[v11.1] 量子化後も ``module.weight.dtype`` / ``.shape`` 等の属性参照が
+        壊れないようにするための軽量なメタテンソル。
+
+        リモートコード (auto_map) のモデル実装には、forward中に
+        ``hidden_states.to(self.mlp.gate_proj.weight.dtype)`` のような
+        参照があり、量子化で .weight が無くなると動作しなくなる
+        (XHToken/Spark-X2.6-4B で実際に発生)。このメタテンソルは
+        dtype/形状情報のみを持ち、メモリ消費と演算コストはゼロ。
+        実際の演算は forward (qweight/scale) で行われるため、値は持たない。
+        """
+        w = self.__dict__.get("_weight_meta")
+        if w is None:
+            w = torch.empty((self.out_features, self.in_features),
+                            dtype=self._weight_dtype, device="meta")
+            self.__dict__["_weight_meta"] = w
+        return w
 
     # ------------------------------------------------------------ 統計 (v5)
 
